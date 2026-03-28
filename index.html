@@ -108,7 +108,7 @@
     const db = new Dexie("LocalMicroblogDB");
     db.version(2).stores({ tweets: '++id, timestamp, dateString, text, parentId' });
 
-    let activeStagingTarget = 'main'; // 'main' or a tweet ID or 'thread'
+    let activeStagingTarget = 'main'; 
     const stagedData = { 'main': [] };
     let feedLimit = 10;
     let currentQuery = '';
@@ -184,6 +184,42 @@
         }
     }
 
+    // --- Edit Logic ---
+    window.toggleEdit = async (id, context = '') => {
+        const prefix = context ? `${context}-` : '';
+        const editAreaId = `${prefix}edit-area-${id}`;
+        const inputId = `${prefix}edit-input-${id}`;
+        const replyAreaId = `${prefix}reply-area-${id}`;
+        
+        const el = document.getElementById(editAreaId);
+        if (!el) return;
+        
+        const t = await db.tweets.get(id);
+        if (el.style.display === 'none' || !el.style.display) {
+            document.getElementById(inputId).value = t.text;
+            el.style.display = 'block';
+            const replyEl = document.getElementById(replyAreaId);
+            if (replyEl) replyEl.style.display = 'none'; // hide reply area if open
+        } else {
+            el.style.display = 'none';
+        }
+    };
+
+    window.saveEdit = async (id, context = '') => {
+        const prefix = context ? `${context}-` : '';
+        const inputId = `${prefix}edit-input-${id}`;
+        const newText = document.getElementById(inputId).value.trim();
+        
+        // Dexie's .update() only modifies specific fields, meaning timestamp stays exactly the same
+        await db.tweets.update(id, { text: newText }); 
+        
+        if (document.getElementById('threadHeader').style.display === 'block' && threadRootId) {
+            openThreadView(threadRootId);
+        } else {
+            triggerSearch(false);
+        }
+    };
+
     // --- Feed Rendering ---
     async function triggerSearch(reset = false) {
         threadRootId = null;
@@ -198,7 +234,6 @@
 
         let all = await db.tweets.orderBy('timestamp').reverse().toArray();
         
-        // Parse date filters (since:YYYY-MM-DD until:YYYY-MM-DD)
         let sinceDate = null, untilDate = null;
         const sinceMatch = q.match(/since:(\d{4}-\d{2}-\d{2})/);
         const untilMatch = q.match(/until:(\d{4}-\d{2}-\d{2})/);
@@ -267,12 +302,22 @@
             <div onclick="openThreadView(${t.id})" style="cursor:pointer;">${tweetContent}</div>
             <div class="tweet-images">${(t.images || []).map(img => `<img src="${img}" onclick="showLightbox('${img}')">`).join('')}</div>
             ${!isQRT ? `
-                <div style="margin-top:8px; display:flex; gap:6px;">
+                <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
                     <button class="action-btn" onclick="toggleReply(${t.id})">💬 Reply</button>
                     <button class="action-btn" onclick="navigator.clipboard.writeText('tweet:#'+${t.id})">🔗 Link</button>
+                    <button class="action-btn" onclick="toggleEdit(${t.id})">✏️ Edit</button>
                     <button class="action-btn" style="color:var(--danger)" onclick="deleteTweet(${t.id})">Delete</button>
                     <button class="action-btn" onclick="openThreadView(${t.id})">🧵 Thread</button>
                 </div>
+                
+                <div id="edit-area-${t.id}" style="display:none; margin-top:8px; border-top:1px dashed var(--border); padding-top:8px;">
+                    <textarea id="edit-input-${t.id}" placeholder="Edit your tweet..."></textarea>
+                    <div style="display:flex; justify-content:flex-end; gap:4px; margin-top:4px;">
+                        <button class="action-btn" onclick="toggleEdit(${t.id})">Cancel</button>
+                        <button onclick="saveEdit(${t.id})">Save</button>
+                    </div>
+                </div>
+
                 <div id="reply-area-${t.id}" style="display:none; margin-top:8px; border-top:1px dashed var(--border); padding-top:8px;">
                     <textarea id="input-${t.id}" placeholder="Reply..."></textarea>
                     <div id="staging-${t.id}" class="staging-area"></div>
@@ -295,12 +340,22 @@
             <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">#${t.id} • ${new Date(t.timestamp).toLocaleString()}</div>
             <div style="font-size:14px;">${tweetContent}</div>
             <div class="tweet-images">${(t.images || []).map(img => `<img src="${img}" onclick="showLightbox('${img}')">`).join('')}</div>
+            <div style="margin-top:8px; display:flex; gap:6px;">
+                <button class="action-btn" onclick="toggleEdit(${t.id}, 'thread')">✏️ Edit</button>
+            </div>
+            
+            <div id="thread-edit-area-${t.id}" style="display:none; margin-top:8px; border-top:1px dashed var(--border); padding-top:8px;">
+                <textarea id="thread-edit-input-${t.id}" placeholder="Edit your tweet..."></textarea>
+                <div style="display:flex; justify-content:flex-end; gap:4px; margin-top:4px;">
+                    <button class="action-btn" onclick="toggleEdit(${t.id}, 'thread')">Cancel</button>
+                    <button onclick="saveEdit(${t.id}, 'thread')">Save</button>
+                </div>
+            </div>
         `;
         return el;
     }
 
     window.openThreadView = async (tweetId) => {
-        // Find the actual root tweet by traversing parentId chain upwards
         let currentTweet = await db.tweets.get(tweetId);
         if (!currentTweet) return;
         
@@ -336,16 +391,16 @@
         composer.className = 'composer';
         composer.style.marginTop = '8px';
         composer.innerHTML = `
-            <textarea id="threadReplyText" placeholder="Reply in thread..."></textarea>
-            <div id="staging-${tweetId}" class="staging-area"></div>
+            <textarea id="threadReplyText" placeholder="Reply to topmost tweet..."></textarea>
+            <div id="staging-${threadRootId}" class="staging-area"></div>
             <div class="composer-actions">
-                <button class="action-btn" onclick="triggerImageInput('${tweetId}')">📷 Image</button>
-                <button onclick="postTweet('threadReplyText', ${tweetId})">Reply</button>
+                <button class="action-btn" onclick="triggerImageInput('${threadRootId}')">📷 Image</button>
+                <button onclick="postTweet('threadReplyText', ${threadRootId})">Reply</button>
             </div>
         `;
         threadFeed.appendChild(composer);
-        stagedData['${tweetId}'] = stagedData['${tweetId}'] || [];
-        renderStaging('${tweetId}');
+        stagedData[String(threadRootId)] = stagedData[String(threadRootId)] || [];
+        renderStaging(String(threadRootId));
     };
 
     window.exitThreadView = () => {
@@ -360,6 +415,8 @@
     window.toggleReply = (id) => {
         const el = document.getElementById(`reply-area-${id}`);
         el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        const editEl = document.getElementById(`edit-area-${id}`);
+        if (editEl) editEl.style.display = 'none'; // hide edit if open
     };
 
     // Track lightbox images and current index
@@ -367,7 +424,6 @@
     let currentLightboxIndex = 0;
     
     window.showLightbox = (src) => {
-        // Get all images from the page
         lightboxImages = Array.from(document.querySelectorAll('.tweet-images img')).map(img => img.src);
         currentLightboxIndex = lightboxImages.indexOf(src);
         if (currentLightboxIndex === -1) { lightboxImages = [src]; currentLightboxIndex = 0; }
@@ -400,7 +456,6 @@
         updateLightbox();
     };
     
-    // Add keyboard shortcuts for lightbox navigation
     document.addEventListener('keydown', (e) => {
         const lightbox = document.getElementById('lightbox');
         if (lightbox.style.display === 'flex') {
@@ -410,7 +465,6 @@
         }
     });
     
-    // Add touch/swipe support for lightbox
     let touchStartX = 0;
     document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; }, false);
     document.addEventListener('touchend', (e) => {
@@ -485,7 +539,6 @@
         }
     }
 
-    // Add paste-to-upload image support for textareas
     function setupPasteListener(textareaId, target) {
         const textarea = document.getElementById(textareaId);
         if (!textarea) return;
@@ -514,14 +567,12 @@
     
     setupPasteListener('tweetText', 'main');
     
-    // Setup paste listener on thread reply when opened
     const originalOpenThreadView = window.openThreadView;
     window.openThreadView = async (tweetId) => {
         await originalOpenThreadView(tweetId);
         setTimeout(() => setupPasteListener('threadReplyText', threadRootId), 100);
     };
     
-    // Setup paste listener on inline replies when toggled
     const originalToggleReply = window.toggleReply;
     window.toggleReply = (id) => {
         originalToggleReply(id);
