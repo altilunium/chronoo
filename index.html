@@ -197,7 +197,22 @@
         currentQuery = q;
 
         let all = await db.tweets.orderBy('timestamp').reverse().toArray();
-        const results = all.filter(t => t.text.toLowerCase().includes(q));
+        
+        // Parse date filters (since:YYYY-MM-DD until:YYYY-MM-DD)
+        let sinceDate = null, untilDate = null;
+        const sinceMatch = q.match(/since:(\d{4}-\d{2}-\d{2})/);
+        const untilMatch = q.match(/until:(\d{4}-\d{2}-\d{2})/);
+        if (sinceMatch) sinceDate = sinceMatch[1];
+        if (untilMatch) untilDate = untilMatch[1];
+        
+        const results = all.filter(t => {
+            const textMatch = t.text.toLowerCase().includes(q.replace(/since:[^ ]+\s*/g, '').replace(/until:[^ ]+\s*/g, '').trim());
+            if (!textMatch) return false;
+            
+            if (sinceDate && t.dateString < sinceDate) return false;
+            if (untilDate && t.dateString > untilDate) return false;
+            return true;
+        });
 
         const feed = document.getElementById('feed');
         feed.innerHTML = '';
@@ -285,9 +300,18 @@
     }
 
     window.openThreadView = async (tweetId) => {
-        const rootTweet = await db.tweets.get(tweetId);
-        if (!rootTweet) return;
-        threadRootId = tweetId;
+        // Find the actual root tweet by traversing parentId chain upwards
+        let currentTweet = await db.tweets.get(tweetId);
+        if (!currentTweet) return;
+        
+        while (currentTweet.parentId) {
+            const parent = await db.tweets.get(currentTweet.parentId);
+            if (!parent) break;
+            currentTweet = parent;
+        }
+        
+        const rootTweet = currentTweet;
+        threadRootId = rootTweet.id;
 
         document.getElementById('mainUI').style.display = 'none';
         document.getElementById('threadHeader').style.display = 'block';
@@ -338,7 +362,64 @@
         el.style.display = el.style.display === 'none' ? 'block' : 'none';
     };
 
-    window.showLightbox = (src) => { document.getElementById('lightboxImg').src = src; document.getElementById('lightbox').style.display = 'flex'; };
+    // Track lightbox images and current index
+    let lightboxImages = [];
+    let currentLightboxIndex = 0;
+    
+    window.showLightbox = (src) => {
+        // Get all images from the page
+        lightboxImages = Array.from(document.querySelectorAll('.tweet-images img')).map(img => img.src);
+        currentLightboxIndex = lightboxImages.indexOf(src);
+        if (currentLightboxIndex === -1) { lightboxImages = [src]; currentLightboxIndex = 0; }
+        
+        updateLightbox();
+        document.getElementById('lightbox').style.display = 'flex';
+    };
+    
+    function updateLightbox() {
+        const lightbox = document.getElementById('lightbox');
+        if (lightboxImages.length === 0) return;
+        const hasMultiple = lightboxImages.length > 1;
+        lightbox.innerHTML = `
+            <div style="position:relative; display:flex; align-items:center; justify-content:center; width:100%; height:100%;">
+                ${hasMultiple ? `<button onclick="prevLightboxImage()" style="position:absolute; left:20px; background:rgba(255,255,255,0.3); color:white; border:none; padding:12px 16px; cursor:pointer; font-size:22px; border-radius:4px; z-index:10;">❮</button>` : ''}
+                <img id="lightboxImg" src="${lightboxImages[currentLightboxIndex]}" style="max-width: 95%; max-height: 95%; object-fit: contain;">
+                ${hasMultiple ? `<button onclick="nextLightboxImage()" style="position:absolute; right:20px; background:rgba(255,255,255,0.3); color:white; border:none; padding:12px 16px; cursor:pointer; font-size:22px; border-radius:4px; z-index:10;">❯</button>` : ''}
+                ${hasMultiple ? `<div style="position:absolute; bottom:20px; color:white; background:rgba(0,0,0,0.5); padding:8px 12px; border-radius:4px;">${currentLightboxIndex + 1}/${lightboxImages.length}</div>` : ''}
+            </div>
+        `;
+    }
+    
+    window.nextLightboxImage = () => {
+        currentLightboxIndex = (currentLightboxIndex + 1) % lightboxImages.length;
+        updateLightbox();
+    };
+    
+    window.prevLightboxImage = () => {
+        currentLightboxIndex = (currentLightboxIndex - 1 + lightboxImages.length) % lightboxImages.length;
+        updateLightbox();
+    };
+    
+    // Add keyboard shortcuts for lightbox navigation
+    document.addEventListener('keydown', (e) => {
+        const lightbox = document.getElementById('lightbox');
+        if (lightbox.style.display === 'flex') {
+            if (e.key === 'ArrowRight') nextLightboxImage();
+            if (e.key === 'ArrowLeft') prevLightboxImage();
+            if (e.key === 'Escape') lightbox.style.display = 'none';
+        }
+    });
+    
+    // Add touch/swipe support for lightbox
+    let touchStartX = 0;
+    document.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; }, false);
+    document.addEventListener('touchend', (e) => {
+        const lightbox = document.getElementById('lightbox');
+        if (lightbox.style.display !== 'flex') return;
+        const touchEndX = e.changedTouches[0].clientX;
+        if (touchStartX - touchEndX > 50) nextLightboxImage();
+        if (touchEndX - touchStartX > 50) prevLightboxImage();
+    }, false);
 
     window.deleteTweet = async (id) => {
         if (confirm("Delete?")) {
@@ -403,6 +484,49 @@
             }
         }
     }
+
+    // Add paste-to-upload image support for textareas
+    function setupPasteListener(textareaId, target) {
+        const textarea = document.getElementById(textareaId);
+        if (!textarea) return;
+        textarea.addEventListener('paste', (e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            
+            for (let item of items) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                        document.getElementById('cropperImage').src = ev.target.result;
+                        document.getElementById('cropperModal').style.display = 'flex';
+                        activeStagingTarget = target;
+                        if (!stagedData[activeStagingTarget]) stagedData[activeStagingTarget] = [];
+                        if (cropper) cropper.destroy();
+                        cropper = new Cropper(document.getElementById('cropperImage'), { viewMode: 1, autoCropArea: 1, background: false });
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+        });
+    }
+    
+    setupPasteListener('tweetText', 'main');
+    
+    // Setup paste listener on thread reply when opened
+    const originalOpenThreadView = window.openThreadView;
+    window.openThreadView = async (tweetId) => {
+        await originalOpenThreadView(tweetId);
+        setTimeout(() => setupPasteListener('threadReplyText', threadRootId), 100);
+    };
+    
+    // Setup paste listener on inline replies when toggled
+    const originalToggleReply = window.toggleReply;
+    window.toggleReply = (id) => {
+        originalToggleReply(id);
+        setTimeout(() => setupPasteListener(`input-${id}`, id), 100);
+    };
 
     document.getElementById('postBtn').onclick = () => postTweet('tweetText');
     document.getElementById('searchInput').oninput = () => triggerSearch(true);
