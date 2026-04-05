@@ -1,4 +1,4 @@
-# chronoo
+# Altilunium Chronoo
 
 https://altilunium.github.io/chronoo/
 
