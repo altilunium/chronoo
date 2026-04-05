@@ -67,6 +67,7 @@
     <div id="mainUI">
         <div class="toolbar" style="padding:8px; display:flex; gap:4px; border-bottom:1px solid var(--border);">
             <input type="text" id="searchInput" placeholder="Search..." style="flex:1; background:var(--surface); border:1px solid var(--border); color:white; padding:4px;">
+            <button id="clearSearchBtn" onclick="clearSearch()" style="display:none;">❌</button>
             <button id="toggleCalendarBtn">📅 Stats</button>
         </div>
 
@@ -169,7 +170,7 @@
         await db.tweets.add({
             text, images: [...images],
             timestamp: Date.now(),
-            dateString: new Date().toISOString().split('T')[0],
+            dateString: new Date().toLocaleDateString('en-CA'),
             parentId
         });
 
@@ -280,7 +281,7 @@
                 const refImages = (refTweet.images || []).map(img => `<img src="${img}" onclick="showLightbox('${img}')">`).join('');
                 qrtHTML = `
                     <div class="qrt-box" onclick="openThreadView(${qId})">
-                        <div class="qrt-header">QRT tweet:#${qId} • ${new Date(refTweet.timestamp).toLocaleString()}</div>
+                        <div class="qrt-header">QRT tweet:#${qId} • ${new Date(refTweet.timestamp).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
                         <div class="qrt-text">${refTweet.text || ''}</div>
                         <div class="tweet-images">${refImages}</div>
                     </div>
@@ -298,7 +299,7 @@
         el.className = 'tweet';
         const tweetContent = await renderTweetTextWithQRT(t);
         el.innerHTML = `
-            <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">#${t.id} • ${new Date(t.timestamp).toLocaleString()}</div>
+            <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">#${t.id} • ${new Date(t.timestamp).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
             <div onclick="openThreadView(${t.id})" style="cursor:pointer;">${tweetContent}</div>
             <div class="tweet-images">${(t.images || []).map(img => `<img src="${img}" onclick="showLightbox('${img}')">`).join('')}</div>
             ${!isQRT ? `
@@ -337,7 +338,7 @@
         el.style.marginLeft = `${depth * 14}px`;
         const tweetContent = await renderTweetTextWithQRT(t);
         el.innerHTML = `
-            <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">#${t.id} • ${new Date(t.timestamp).toLocaleString()}</div>
+            <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">#${t.id} • ${new Date(t.timestamp).toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
             <div style="font-size:14px;">${tweetContent}</div>
             <div class="tweet-images">${(t.images || []).map(img => `<img src="${img}" onclick="showLightbox('${img}')">`).join('')}</div>
             <div style="margin-top:8px; display:flex; gap:6px;">
@@ -482,6 +483,12 @@
         }
     };
 
+    function clearSearch() {
+        document.getElementById('searchInput').value = '';
+        document.getElementById('clearSearchBtn').style.display = 'none';
+        triggerSearch(true);
+    }
+
     // --- Calendar Navigator ---
     document.getElementById('toggleCalendarBtn').onclick = () => {
         const s = document.getElementById('calendarSection');
@@ -525,7 +532,27 @@
             grid.innerHTML = '';
             label.textContent = calDate.toLocaleString('default', { month: 'long', year: 'numeric' });
 
+            // Add day headers
+            const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            for (const day of dayNames) {
+                const header = document.createElement('div');
+                header.className = 'cal-day';
+                header.style.fontWeight = 'bold';
+                header.style.fontSize = '10px';
+                header.textContent = day;
+                grid.appendChild(header);
+            }
+
+            const firstDay = new Date(calDate.getFullYear(), calDate.getMonth(), 1).getDay();
             const days = new Date(calDate.getFullYear(), calDate.getMonth() + 1, 0).getDate();
+
+            // Add empty cells for days before the 1st
+            for (let i = 0; i < firstDay; i++) {
+                const empty = document.createElement('div');
+                empty.className = 'cal-day';
+                grid.appendChild(empty);
+            }
+
             for (let d = 1; d <= days; d++) {
                 const ds = `${calDate.getFullYear()}-${String(calDate.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
                 const count = await db.tweets.where('dateString').equals(ds).count();
@@ -533,7 +560,12 @@
                 box.className = 'cal-day';
                 box.innerHTML = `<span>${d}</span>`;
                 if (count > 0) box.innerHTML += `<div class="cal-count"></div>`;
-                box.onclick = () => { document.getElementById('searchInput').value = `since:${ds} until:${ds}`; triggerSearch(); };
+                box.onclick = () => { 
+                    document.getElementById('searchInput').value = `since:${ds} until:${ds}`; 
+                    document.getElementById('clearSearchBtn').style.display = 'block';
+                    document.getElementById('calendarSection').style.display = 'none';
+                    triggerSearch(); 
+                };
                 grid.appendChild(box);
             }
         }
@@ -580,7 +612,11 @@
     };
 
     document.getElementById('postBtn').onclick = () => postTweet('tweetText');
-    document.getElementById('searchInput').oninput = () => triggerSearch(true);
+    document.getElementById('searchInput').oninput = () => {
+        triggerSearch(true);
+        const btn = document.getElementById('clearSearchBtn');
+        btn.style.display = document.getElementById('searchInput').value.trim() ? 'block' : 'none';
+    };
     triggerSearch(true);
 </script>
 </body>
